@@ -6,8 +6,8 @@ from scipy.interpolate import griddata
 
 
 # FILL IN YOUR ID
-ID1 = 123456789
-ID2 = 987654321
+ID1 = 308339274
+ID2 = 212235246
 
 
 PYRAMID_FILTER = 1.0 / 256 * np.array([[1, 4, 6, 4, 1],
@@ -64,7 +64,15 @@ def build_pyramid(image: np.ndarray, num_levels: int) -> list[np.ndarray]:
     We use a slightly different decimation process from this function.
     """
     pyramid = [image.copy()]
-    """INSERT YOUR CODE HERE."""
+
+    for level_index in range(num_levels):
+        # convolve the PYRAMID_FILTER with the image from the previous level
+        filtered_level = signal.convolve2d(pyramid[level_index], PYRAMID_FILTER, boundary='symm', mode='same')
+        # decimate the convolution result using indexing - pick every second entry of the result
+        decimated_filtered_level = filtered_level[::2, ::2]
+        # append the result
+        pyramid.append(decimated_filtered_level)
+
     return pyramid
 
 
@@ -104,11 +112,46 @@ def lucas_kanade_step(I1: np.ndarray,
         original image. dv encodes the optical flow parameters in rows and du
         in columns.
     """
-    """INSERT YOUR CODE HERE.
-    Calculate du and dv correctly.
-    """
+    # Calculate Ix and Iy by convolving I2 with the appropriate filters
+    Ix = signal.convolve2d(I2, X_DERIVATIVE_FILTER, boundary='symm', mode='same')
+    Iy = signal.convolve2d(I2, Y_DERIVATIVE_FILTER, boundary='symm', mode='same')
+    # Calculate It from I1 and I2.
+    It = I2 - I1
+
+    # Start from all-zeros du and dv (each one) of size I1.shape
     du = np.zeros(I1.shape)
     dv = np.zeros(I1.shape)
+
+    h, w = I1.shape
+    # Loop over all pixels in the image (ignoring boundary pixels)
+    half_window_size = window_size // 2
+    for i in range(half_window_size, h - half_window_size):
+        for j in range(half_window_size, w - half_window_size):
+            # Extract the spatial and temporal gradient windows around the current pixel
+            Ix_Window = Ix[i - half_window_size: i + half_window_size + 1, j - half_window_size : j + half_window_size + 1]
+            Iy_Window = Iy[i - half_window_size: i + half_window_size + 1, j - half_window_size : j + half_window_size + 1]
+            It_Window = It[i - half_window_size: i + half_window_size + 1, j - half_window_size: j + half_window_size + 1]
+
+            # Reshape the gradient windows into vectors
+            Ix_Vector = Ix_Window.reshape(-1)
+            Iy_Vector = Iy_Window.reshape(-1)
+            It_Vector = It_Window.reshape(-1)
+
+            # Construct the A matrix and the b vector
+            A = np.stack((Ix_Vector, Iy_Vector), axis=1)
+            b = -It_Vector
+
+            try:
+                # Calculate the least squares solution, which is (u,v)
+                least_squares_solution, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+
+                # Extract du and dv from the least squares solution
+                du[i, j] = least_squares_solution[0]
+                dv[i, j] = least_squares_solution[1]
+            except:
+                # When the solution does not converge, keep this pixel's (u, v) as zero.
+                pass
+
     return du, dv
 
 
@@ -141,10 +184,34 @@ def warp_image(image: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
     Returns:
         image_warp: np.ndarray. Warped image.
     """
-    image_warp = image.copy()
-    """INSERT YOUR CODE HERE.
-    Replace image_warp with something else.
-    """
+    # Resize u and v to the shape of the input image
+    u = cv2.resize(u, (image.shape[1], image.shape[0]))
+    v = cv2.resize(v, (image.shape[1], image.shape[0]))
+
+    # Get the u and v factors, and normalize according to them
+    u_factor = image.shape[1] / u.shape[1]
+    v_factor = image.shape[0] / v.shape[0]
+    u *= u_factor
+    v *= v_factor
+
+    # Define the grid-points using a flattened version of the `meshgrid` of 0:w-1 and 0:h-1.
+    x = np.arange(image.shape[1])
+    y = np.arange(image.shape[0])
+    xx, yy = np.meshgrid(x, y)
+    points = np.vstack([xx.flatten(), yy.flatten()]).T
+
+    # Define the points to interpolate with coordinates (x+u, y+v)
+    interp_points = points + np.vstack([u.flatten(), v.flatten()]).T
+
+    # Interpolate the image at the interpolated points
+    image_warp = griddata(points, image.flatten(), interp_points, method='linear', fill_value=np.nan)
+
+    # Reshape the warped image from a flattened shape to the shape of the input image
+    image_warp = image_warp.reshape(image.shape)
+
+    # Fill the np.nan holes with the original image values
+    image_warp[np.isnan(image_warp)] = image[np.isnan(image_warp)]
+
     return image_warp
 
 
