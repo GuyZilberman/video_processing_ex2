@@ -260,16 +260,20 @@ def lucas_kanade_optical_flow(I1: np.ndarray,
         I1 = cv2.resize(I1, IMAGE_SIZE)
     if I2.shape != IMAGE_SIZE:
         I2 = cv2.resize(I2, IMAGE_SIZE)
+
     # create a pyramid from I1 and I2
     pyramid_I1 = build_pyramid(I1, num_levels)
     pyarmid_I2 = build_pyramid(I2, num_levels)
+
     # start from u and v in the size of smallest image
     u = np.zeros(pyarmid_I2[-1].shape)
     v = np.zeros(pyarmid_I2[-1].shape)
+
     # Looping over every level in the image pyramid starting from the smallest image
     for level in range(num_levels, -1, -1):
         # Warp I2 from that level according to the current u and v
         I2_warp = warp_image(pyarmid_I2[level], u, v)
+
         # Repeat for num_iterations
         for iteration in range(max_iter):
             # Perform a Lucas Kanade Step with the I1 decimated image of the
@@ -278,6 +282,7 @@ def lucas_kanade_optical_flow(I1: np.ndarray,
             u += du
             v += dv
             I2_warp = warp_image(pyarmid_I2[level], u, v)
+
         # Resize u and v to the next pyramid level resolution
         if level > 0:
             u = cv2.resize(u, (pyramid_I1[level - 1].shape)[::-1], interpolation=cv2.INTER_NEAREST) * 2
@@ -481,8 +486,6 @@ def faster_lucas_kanade_step(I1: np.ndarray,
     corners = np.where(corners > 0.1 * corners.max(), 1, 0)
     corners = np.argwhere(corners == 1)
 
-    kernel_t = np.array([[1], [1]])
-
     du = np.zeros(I1.shape)
     dv = np.zeros(I1.shape)
 
@@ -495,9 +498,11 @@ def faster_lucas_kanade_step(I1: np.ndarray,
         Iy_Window = signal.convolve2d(I2[corner[0] - w:corner[0] + w + 1, corner[1] - w:corner[1] + w + 1],Y_DERIVATIVE_FILTER, boundary='symm', mode='same')
         It_Window = I2.astype(int) - I1.astype(int)
 
+        # Reshape each window into a vector
         Ix_Vector = Ix_Window.reshape(-1)
         Iy_Vector = Iy_Window.reshape(-1)
         It_Vector = It_Window.reshape(-1)
+
         # Construct the A matrix and the b vector
         A = np.stack((Ix_Vector, Iy_Vector), axis=1)
         b = -It_Vector
@@ -542,16 +547,20 @@ def faster_lucas_kanade_optical_flow(
         I1 = cv2.resize(I1, IMAGE_SIZE)
     if I2.shape != IMAGE_SIZE:
         I2 = cv2.resize(I2, IMAGE_SIZE)
+
     # create a pyramid from I1 and I2
     pyramid_I1 = build_pyramid(I1, num_levels)
     pyarmid_I2 = build_pyramid(I2, num_levels)
+
     # start from u and v in the size of smallest image
     u = np.zeros(pyarmid_I2[-1].shape)
     v = np.zeros(pyarmid_I2[-1].shape)
+
     # Looping over every level in the image pyramid starting from the smallest image
     for level in range(num_levels, -1, -1):
         # Warp I2 from that level according to the current u and v
         I2_warp = warp_image(pyarmid_I2[level], u, v)
+
         # Repeat for num_iterations
         for iteration in range(max_iter):
             # Perform a Lucas Kanade Step with the I1 decimated image of the
@@ -560,6 +569,7 @@ def faster_lucas_kanade_optical_flow(
             u += du
             v += dv
             I2_warp = warp_image(pyarmid_I2[level], u, v)
+
         # Resize u and v to the next pyramid level resolution
         if level > 0:
             u = cv2.resize(u, (pyramid_I1[level - 1].shape)[::-1], interpolation=cv2.INTER_NEAREST) * 2
@@ -582,7 +592,6 @@ def lucas_kanade_faster_video_stabilization(
     Returns:
         None.
     """
-    """INSERT YOUR CODE HERE."""
     # Open the input video capture
     input_video_capture = cv2.VideoCapture(input_video_path)
 
@@ -753,28 +762,21 @@ def lucas_kanade_faster_video_stabilization_fix_effects(
         prev_u = curr_u.copy()
         prev_v = curr_v.copy()
 
-        # Warp current frame using optical flow maps and cut it
+        # Warp current frame using optical flow maps
         warped_frame = warp_image(curr_gray_frame, curr_u, curr_v)
+
+        # Set the current frame as the previous frame
         gray_prev_frame = curr_gray_frame
-        curr_cut_frame = frame_cutter(warped_frame, start_rows, end_rows, start_cols, end_cols)
+
+        # Perform the borders cut
+        curr_cut_frame = warped_frame[start_rows:-end_rows, start_cols:-end_cols]
 
         # Resize it back to the original frame size
         resized_warped_cut_frame = cv2.resize(curr_cut_frame, (width, height))
 
         # Write resized cut warped frame to output
         output_video_writer.write(resized_warped_cut_frame)
-
-        # Update the previous frame to be the current frame
-        # gray_prev_frame = curr_gray_frame
-        # curr_cut_frame = cut_frame(resized_warped_frame, start_rows, end_rows, start_cols, end_cols)
     # Release input and output videos
     input_video_capture.release()
     output_video_writer.release()
     cv2.destroyAllWindows()
-
-
-# supporting function to perform the borders cut
-def frame_cutter(input_frame, start_rows, end_rows, start_cols, end_cols):
-    output_frame = input_frame[start_rows:-end_rows, start_cols:-end_cols]
-    return output_frame
-
