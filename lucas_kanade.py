@@ -112,12 +112,10 @@ def lucas_kanade_step(I1: np.ndarray,
         original image. dv encodes the optical flow parameters in rows and du
         in columns.
     """
-    #kernel_t = np.array([[1., 1.], [1., 1.]]) #TODO guy DELETE
     # Calculate Ix and Iy by convolving I2 with the appropriate filters
     Ix = signal.convolve2d(I2, X_DERIVATIVE_FILTER, boundary='symm', mode='same')
     Iy = signal.convolve2d(I2, Y_DERIVATIVE_FILTER, boundary='symm', mode='same')
-    #It = signal.convolve2d(I2, kernel_t, boundary='symm', mode='same') + signal.convolve2d(I1, -kernel_t, boundary='symm', mode='same') #TODO guy DELETE
-    It = I2 - I1
+    It = I2.astype(int) - I1.astype(int)
 
     # Start from all-zeros du and dv (each one) of size I1.shape
     du = np.zeros(I1.shape)
@@ -152,7 +150,6 @@ def lucas_kanade_step(I1: np.ndarray,
             except:
                 # When the solution does not converge, keep this pixel's (u, v) as zero.
                 pass
-
     return du, dv
 
 
@@ -213,7 +210,8 @@ def warp_image(image: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
     # Fill the np.nan holes with the original image values
     image_warp[np.isnan(image_warp)] = image[np.isnan(image_warp)]
 
-    return image_warp
+    return image_warp.astype(np.uint8)
+
 
 
 def lucas_kanade_optical_flow(I1: np.ndarray,
@@ -254,10 +252,10 @@ def lucas_kanade_optical_flow(I1: np.ndarray,
           image resize (using cv2.resize) to the next pyramid level resolution
           and scale u and v accordingly.
     """
-    h_factor = int(np.ceil(I1.shape[0] / (2 ** (num_levels - 1 + 1))))
-    w_factor = int(np.ceil(I1.shape[1] / (2 ** (num_levels - 1 + 1))))
-    IMAGE_SIZE = (w_factor * (2 ** (num_levels - 1 + 1)),
-                  h_factor * (2 ** (num_levels - 1 + 1)))
+    h_factor = int(np.ceil(I1.shape[0] / (2 ** (num_levels - 1))))
+    w_factor = int(np.ceil(I1.shape[1] / (2 ** (num_levels - 1))))
+    IMAGE_SIZE = (w_factor * (2 ** (num_levels - 1)),
+                  h_factor * (2 ** (num_levels - 1)))
     if I1.shape != IMAGE_SIZE:
         I1 = cv2.resize(I1, IMAGE_SIZE)
     if I2.shape != IMAGE_SIZE:
@@ -301,6 +299,19 @@ def get_video_parameters(capture: cv2.VideoCapture) -> dict:
     parameters = {"fourcc": fourcc, "fps": fps, "height": height, "width": width, "frame_count": frame_count}
     return parameters
 
+
+def get_gray_resized_frame(input_video_capture, width, height):  # TODO guy fix signature to be like others
+    # Get the first frame from the input video
+    retval, frame = input_video_capture.read()
+
+    if not retval:
+        print("Reading frame failed")
+        return #TODO guy fix this to have a better return value
+
+    # Convert the first frame to grayscale
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    frame = cv2.resize(frame, (width, height))
+    return frame
 
 def lucas_kanade_video_stabilization(input_video_path: str,
                                      output_video_path: str,
@@ -366,87 +377,76 @@ def lucas_kanade_video_stabilization(input_video_path: str,
     # Open the output video writer
     output_video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height), False)
 
-    # Calculate the output video dims
-    K = np.ceil(height / (2 ** (num_levels - 1)))
-    M = np.ceil(width / (2 ** (num_levels - 1)))
-    height_final = int(K * (2 ** (num_levels - 1)))
-    width_final = int(M * (2 ** (num_levels - 1)))
-
     # Get the first frame from the input video
-    retval, first_frame = input_video_capture.read()
+    retval, prev_frame = input_video_capture.read()
 
-    if not retval:
-        print("Reading frame failed")
-        return
-
-    # Convert the first frame to grayscale
-    gray_first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-    gray_first_frame = cv2.resize(gray_first_frame, (width_final, height_final))
+    # Convert it to grayscale
+    gray_first_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
 
     # Write the first frame to the output video
     output_video_writer.write(gray_first_frame)
 
-    # Create arrays to hold optical flow maps
-    prev_frame_u = np.zeros_like(gray_first_frame)
-    prev_frame_v = np.zeros_like(gray_first_frame)
+    # Calculate the output video dims
+    h_factor = int(np.ceil(gray_first_frame.shape[0] / (2 ** (num_levels - 1))))
+    w_factor = int(np.ceil(gray_first_frame.shape[1] / (2 ** (num_levels - 1))))
+    IMAGE_SIZE = (w_factor * (2 ** (num_levels - 1)),
+                    h_factor * (2 ** (num_levels - 1)))
+    if gray_first_frame.shape != IMAGE_SIZE:
+        gray_first_frame = cv2.resize(gray_first_frame, IMAGE_SIZE)
 
+
+    # Create arrays to hold optical flow maps
+    prev_u = np.zeros_like(gray_first_frame)
+    prev_v = np.zeros_like(gray_first_frame)
+
+    # Update the previous frame to be the first frame
     gray_prev_frame = gray_first_frame
+
     # Loop over frames in input video
     for i in tqdm(range(frame_count - 1)):
         # Read current frame
-        retval, curr_frame = input_video_capture.read()
+        retval, curr_gray_frame = input_video_capture.read()
+
         if not retval:
-            print("Reading video failed")  # TODO guy delete?
-            return
+            print("Reading frame failed")
+            break
 
-        # Convert current frame to grayscale
-        curr_gray = cv2.cvtColor(curr_frame, cv2.COLOR_BGR2GRAY)  # TODO guy change name to curr_gray_frame
-
-        # Resize current frame to appropriate size
-        curr_gray = cv2.resize(curr_gray, (width_final, height_final))
+        # Convert the current frame to grayscale
+        curr_gray_frame = cv2.cvtColor(curr_gray_frame, cv2.COLOR_BGR2GRAY)
+        curr_gray_frame = cv2.resize(curr_gray_frame, IMAGE_SIZE)
 
         # Compute optical flow
-        print("")
-        print("gray_prev_frame.shape")
-        print(gray_prev_frame.shape)
-        print("")
-        print("curr_gray.shape")
-        print(curr_gray.shape)
-        curr_frame_u, curr_frame_v = lucas_kanade_optical_flow(gray_prev_frame, curr_gray, window_size, max_iter, num_levels)
+        curr_u, curr_v = lucas_kanade_optical_flow(gray_prev_frame, curr_gray_frame, window_size, max_iter, num_levels)
 
-        # Compute mean values of optical flow maps in valid regions
-        half_window_size = window_size // 2
-        valid_region_u = curr_frame_u[half_window_size:-half_window_size, half_window_size:-half_window_size]
-        valid_region_v = curr_frame_v[half_window_size:-half_window_size, half_window_size:-half_window_size]
-        mean_u = np.mean(valid_region_u)
-        mean_v = np.mean(valid_region_v)
-
-        # Update optical flow maps with mean values
-        curr_frame_u[half_window_size:-half_window_size, half_window_size:-half_window_size] = mean_u
-        curr_frame_v[half_window_size:-half_window_size, half_window_size:-half_window_size] = mean_v
+        # Update u and v to their mean values inside the valid computation region
+        w = window_size // 2
+        curr_u[w:-w, w:-w] = np.mean(curr_u[w:-w, w:-w])
+        curr_v[w:-w, w:-w] = np.mean(curr_v[w:-w, w:-w])
 
         # Add the u and v shift from the previous frame diff
-        curr_frame_u += prev_frame_u
-        curr_frame_v += prev_frame_v
+        curr_u += prev_u
+        curr_v += prev_v
 
         # Save current optical flow maps for next frame
-        prev_frame_u = curr_frame_u.copy()
-        prev_frame_v = curr_frame_v.copy()
+        prev_u = curr_u.copy()
+        prev_v = curr_v.copy()
 
         # Warp current frame using optical flow maps
-        warped_frame = warp_image(curr_frame, curr_frame_u, curr_frame_v)
+        warped_frame = warp_image(curr_gray_frame, curr_u, curr_v)
 
-        # Write warped frame to output
-        output_video_writer.write(warped_frame)
+        # Resize it back to the original frame size
+        resized_warped_frame = cv2.resize(warped_frame, (width, height))
 
-        # TODO guy           (6.8) We highly recommend you to save each frame to a directory for
-        #           your own debug purposes. Erase that code when submitting the exercise.
+        # Write resized warped frame to output
+        output_video_writer.write(resized_warped_frame)
+
+        # Update the previous frame to be the current frame
+        gray_prev_frame = curr_gray_frame
 
     # Release input and output videos
     input_video_capture.release()
     output_video_writer.release()
     cv2.destroyAllWindows()
-
 
 
 def faster_lucas_kanade_step(I1: np.ndarray,
@@ -472,11 +472,47 @@ def faster_lucas_kanade_step(I1: np.ndarray,
         original image. dv encodes the shift in rows and du in columns.
     """
 
+    # When the picture is small enough perform the good old lucas_kanade step
+    if I1.shape[0] < 50 and I1.shape[1] < 50:
+        return lucas_kanade_step(I1, I2, window_size)
+
+    # Finding the corners in the picture I2
+    corners = cv2.cornerHarris(I2.astype(np.float32), 5, 0, 0.05)
+    corners = np.where(corners > 0.1 * corners.max(), 1, 0)
+    corners = np.argwhere(corners == 1)
+
+    kernel_t = np.array([[1], [1]])
+
     du = np.zeros(I1.shape)
     dv = np.zeros(I1.shape)
-    """INSERT YOUR CODE HERE.
-    Calculate du and dv correctly.
-    """
+
+    # Compute half of window size
+    w = window_size // 2
+
+    for corner in corners:
+        # for each point, calculate I_x, I_y, I_t
+        Ix_Window = signal.convolve2d(I2[corner[0] - w:corner[0] + w + 1, corner[1] - w:corner[1] + w + 1],X_DERIVATIVE_FILTER, boundary='symm', mode='same')
+        Iy_Window = signal.convolve2d(I2[corner[0] - w:corner[0] + w + 1, corner[1] - w:corner[1] + w + 1],Y_DERIVATIVE_FILTER, boundary='symm', mode='same')
+        It_Window = I2.astype(int) - I1.astype(int)
+
+        Ix_Vector = Ix_Window.reshape(-1)
+        Iy_Vector = Iy_Window.reshape(-1)
+        It_Vector = It_Window.reshape(-1)
+        # Construct the A matrix and the b vector
+        A = np.stack((Ix_Vector, Iy_Vector), axis=1)
+        b = -It_Vector
+
+        try:
+            # Calculate the least squares solution, which is (u,v)
+            least_squares_solution, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+
+            # Extract du and dv from the least squares solution
+            du[corner] = least_squares_solution[0]
+            dv[corner] = least_squares_solution[1]
+        except:
+            # When the solution does not converge, keep this pixel's (u, v) as zero.
+            pass
+
     return du, dv
 
 
@@ -498,22 +534,36 @@ def faster_lucas_kanade_optical_flow(
         (u, v): tuple of np.ndarray-s. Each one of the shape of the
         original image. v encodes the shift in rows and u in columns.
     """
-    h_factor = int(np.ceil(I1.shape[0] / (2 ** num_levels)))
-    w_factor = int(np.ceil(I1.shape[1] / (2 ** num_levels)))
-    IMAGE_SIZE = (w_factor * (2 ** num_levels),
-                  h_factor * (2 ** num_levels))
+    h_factor = int(np.ceil(I1.shape[0] / (2 ** (num_levels - 1))))
+    w_factor = int(np.ceil(I1.shape[1] / (2 ** (num_levels - 1))))
+    IMAGE_SIZE = (w_factor * (2 ** (num_levels - 1)),
+                  h_factor * (2 ** (num_levels - 1)))
     if I1.shape != IMAGE_SIZE:
         I1 = cv2.resize(I1, IMAGE_SIZE)
     if I2.shape != IMAGE_SIZE:
         I2 = cv2.resize(I2, IMAGE_SIZE)
-    pyramid_I1 = build_pyramid(I1, num_levels)  # create levels list for I1
-    pyarmid_I2 = build_pyramid(I2, num_levels)  # create levels list for I1
-    u = np.zeros(pyarmid_I2[-1].shape)  # create u in the size of smallest image
-    v = np.zeros(pyarmid_I2[-1].shape)  # create v in the size of smallest image
-    """INSERT YOUR CODE HERE.
-    Replace u and v with their true value."""
-    u = np.zeros(I1.shape)
-    v = np.zeros(I1.shape)
+    # create a pyramid from I1 and I2
+    pyramid_I1 = build_pyramid(I1, num_levels)
+    pyarmid_I2 = build_pyramid(I2, num_levels)
+    # start from u and v in the size of smallest image
+    u = np.zeros(pyarmid_I2[-1].shape)
+    v = np.zeros(pyarmid_I2[-1].shape)
+    # Looping over every level in the image pyramid starting from the smallest image
+    for level in range(num_levels, -1, -1):
+        # Warp I2 from that level according to the current u and v
+        I2_warp = warp_image(pyarmid_I2[level], u, v)
+        # Repeat for num_iterations
+        for iteration in range(max_iter):
+            # Perform a Lucas Kanade Step with the I1 decimated image of the
+            # current pyramid level and the current I2_warp to get the new I2_warp
+            du, dv = faster_lucas_kanade_step(pyramid_I1[level], I2_warp, window_size)
+            u += du
+            v += dv
+            I2_warp = warp_image(pyarmid_I2[level], u, v)
+        # Resize u and v to the next pyramid level resolution
+        if level > 0:
+            u = cv2.resize(u, (pyramid_I1[level - 1].shape)[::-1], interpolation=cv2.INTER_NEAREST) * 2
+            v = cv2.resize(v, (pyramid_I1[level - 1].shape)[::-1], interpolation=cv2.INTER_NEAREST) * 2
     return u, v
 
 
@@ -533,7 +583,89 @@ def lucas_kanade_faster_video_stabilization(
         None.
     """
     """INSERT YOUR CODE HERE."""
-    pass
+    # Open the input video capture
+    input_video_capture = cv2.VideoCapture(input_video_path)
+
+    # Open the input video capture and get its parameters
+    parameters = get_video_parameters(input_video_capture)
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    fps = parameters["fps"]
+    height = parameters["height"]
+    width = parameters["width"]
+    frame_count = parameters["frame_count"]
+
+    # Open the output video writer
+    output_video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height), False)
+
+    # Get the first frame from the input video
+    retval, prev_frame = input_video_capture.read()
+
+    # Convert it to grayscale
+    gray_first_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+
+    # Write the first frame to the output video
+    output_video_writer.write(gray_first_frame)
+
+    # Calculate the output video dims
+    h_factor = int(np.ceil(gray_first_frame.shape[0] / (2 ** (num_levels - 1))))
+    w_factor = int(np.ceil(gray_first_frame.shape[1] / (2 ** (num_levels - 1))))
+    IMAGE_SIZE = (w_factor * (2 ** (num_levels - 1)),
+                  h_factor * (2 ** (num_levels - 1)))
+    if gray_first_frame.shape != IMAGE_SIZE:
+        gray_first_frame = cv2.resize(gray_first_frame, IMAGE_SIZE)
+
+    # Create arrays to hold optical flow maps
+    prev_u = np.zeros_like(gray_first_frame)
+    prev_v = np.zeros_like(gray_first_frame)
+
+    # Update the previous frame to be the first frame
+    gray_prev_frame = gray_first_frame
+
+    # Loop over frames in input video
+    for i in tqdm(range(frame_count - 1)):
+        # Read current frame
+        retval, curr_gray_frame = input_video_capture.read()
+
+        if not retval:
+            print("Reading frame failed")
+            break
+
+        # Convert the current frame to grayscale
+        curr_gray_frame = cv2.cvtColor(curr_gray_frame, cv2.COLOR_BGR2GRAY)
+        curr_gray_frame = cv2.resize(curr_gray_frame, IMAGE_SIZE)
+
+        # Compute optical flow
+        curr_u, curr_v = faster_lucas_kanade_optical_flow(gray_prev_frame, curr_gray_frame, window_size, max_iter, num_levels)
+
+        # Update u and v to their mean values inside the valid computation region
+        w = window_size // 2
+        curr_u[w:-w, w:-w] = np.mean(curr_u[w:-w, w:-w])
+        curr_v[w:-w, w:-w] = np.mean(curr_v[w:-w, w:-w])
+
+        # Add the u and v shift from the previous frame diff
+        curr_u += prev_u
+        curr_v += prev_v
+
+        # Save current optical flow maps for next frame
+        prev_u = curr_u.copy()
+        prev_v = curr_v.copy()
+
+        # Warp current frame using optical flow maps
+        warped_frame = warp_image(curr_gray_frame, curr_u, curr_v)
+
+        # Resize it back to the original frame size
+        resized_warped_frame = cv2.resize(warped_frame, (width, height))
+
+        # Write resized warped frame to output
+        output_video_writer.write(resized_warped_frame)
+
+        # Update the previous frame to be the current frame
+        gray_prev_frame = curr_gray_frame
+
+    # Release input and output videos
+    input_video_capture.release()
+    output_video_writer.release()
+    cv2.destroyAllWindows()
 
 
 def lucas_kanade_faster_video_stabilization_fix_effects(
@@ -556,7 +688,93 @@ def lucas_kanade_faster_video_stabilization_fix_effects(
     Returns:
         None.
     """
-    """INSERT YOUR CODE HERE."""
-    pass
+    # Open the input video capture
+    input_video_capture = cv2.VideoCapture(input_video_path)
 
+    # Open the input video capture and get its parameters
+    parameters = get_video_parameters(input_video_capture)
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    fps = parameters["fps"]
+    height = parameters["height"]
+    width = parameters["width"]
+    frame_count = parameters["frame_count"]
+
+    # Open the output video writer
+    output_video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height), False)
+
+    # Get the first frame from the input video
+    retval, prev_frame = input_video_capture.read()
+
+    # Convert it to grayscale
+    gray_first_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+
+    # Calculate the output video dims
+    h_factor = int(np.ceil(gray_first_frame.shape[0] / (2 ** (num_levels - 1))))
+    w_factor = int(np.ceil(gray_first_frame.shape[1] / (2 ** (num_levels - 1))))
+    IMAGE_SIZE = (w_factor * (2 ** (num_levels - 1)),
+                  h_factor * (2 ** (num_levels - 1)))
+    if gray_first_frame.shape != IMAGE_SIZE:
+        gray_first_frame = cv2.resize(gray_first_frame, IMAGE_SIZE)
+
+    # Create arrays to hold optical flow maps
+    prev_u = np.zeros_like(gray_first_frame)
+    prev_v = np.zeros_like(gray_first_frame)
+
+    # Update the previous frame to be the first frame
+    gray_prev_frame = gray_first_frame
+
+    # Loop over frames in input video
+    for i in tqdm(range(frame_count - 1)):
+        # Read current frame
+        retval, curr_gray_frame = input_video_capture.read()
+
+        if not retval:
+            print("Reading frame failed")
+            break
+
+        # Convert the current frame to grayscale
+        curr_gray_frame = cv2.cvtColor(curr_gray_frame, cv2.COLOR_BGR2GRAY)
+        curr_gray_frame = cv2.resize(curr_gray_frame, IMAGE_SIZE)
+
+        # Compute optical flow
+        curr_u, curr_v = faster_lucas_kanade_optical_flow(gray_prev_frame, curr_gray_frame, window_size, max_iter,
+                                                          num_levels)
+
+        # Update u and v to their mean values inside the valid computation region
+        w = window_size // 2
+        curr_u[w:-w, w:-w] = np.mean(curr_u[w:-w, w:-w])
+        curr_v[w:-w, w:-w] = np.mean(curr_v[w:-w, w:-w])
+
+        # Add the u and v shift from the previous frame diff
+        curr_u += prev_u
+        curr_v += prev_v
+
+        # Save current optical flow maps for next frame
+        prev_u = curr_u.copy()
+        prev_v = curr_v.copy()
+
+        # Warp current frame using optical flow maps and cut it
+        warped_frame = warp_image(curr_gray_frame, curr_u, curr_v)
+        gray_prev_frame = curr_gray_frame
+        curr_cut_frame = frame_cutter(warped_frame, start_rows, end_rows, start_cols, end_cols)
+
+        # Resize it back to the original frame size
+        resized_warped_cut_frame = cv2.resize(curr_cut_frame, (width, height))
+
+        # Write resized cut warped frame to output
+        output_video_writer.write(resized_warped_cut_frame)
+
+        # Update the previous frame to be the current frame
+        # gray_prev_frame = curr_gray_frame
+        # curr_cut_frame = cut_frame(resized_warped_frame, start_rows, end_rows, start_cols, end_cols)
+    # Release input and output videos
+    input_video_capture.release()
+    output_video_writer.release()
+    cv2.destroyAllWindows()
+
+
+# supporting function to perform the borders cut
+def frame_cutter(input_frame, start_rows, end_rows, start_cols, end_cols):
+    output_frame = input_frame[start_rows:-end_rows, start_cols:-end_cols]
+    return output_frame
 

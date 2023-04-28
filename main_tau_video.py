@@ -12,7 +12,7 @@ ID1 = '308339274'
 ID2 = '212235246'
 
 # Choose parameters
-WINDOW_SIZE_TAU = 5  # Add your value here!
+WINDOW_SIZE_TAU = 4  # Add your value here!
 MAX_ITER_TAU = 5  # Add your value here!
 NUM_LEVELS_TAU = 5  # Add your value here!
 
